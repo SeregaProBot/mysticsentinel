@@ -68,8 +68,7 @@ async def call_admins(message: types.Message):
 async def anti_arab(message: types.Message):
     await message.delete()
     log_violation(message.from_user.id, message.from_user.full_name, "Арабский текст")
-    await bot.send_message(LOG_CHANNEL_ID, f"Арабский текст от {message.from_user.full_name}:
-{message.text}")
+    await bot.send_message(LOG_CHANNEL_ID, f"Арабский текст от {message.from_user.full_name}: {message.text}")
 
 @dp.message_handler(lambda m: m.text and m.text.lower().count("http") > 2)
 async def anti_spam(message: types.Message):
