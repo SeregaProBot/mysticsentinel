@@ -1,145 +1,213 @@
 import logging
-import sqlite3
-import os
-from datetime import datetime
+import re
+import datetime
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ParseMode, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.utils import executor
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
 
-API_TOKEN = os.getenv("API_TOKEN")
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1000000000000"))
+API_TOKEN = 'YOUR_TOKEN_HERE'  # Вставь сюда токен бота
+LOG_CHANNEL_ID = -1001234567890  # Вставь сюда ID канала для логов (отрицательное число)
 
-bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
-dp = Dispatcher(bot, storage=MemoryStorage())
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
 
-admin_ids = [123456789]
-moderators = [111111111]
+# --- Хранилища ---
+admins = {}  # {chat_id: {user_id: level}}
+group_settings = {}  # {chat_id: {'antilinks': True/False}}
 
-conn = sqlite3.connect("violations.db")
-cursor = conn.cursor()
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS violations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    user_name TEXT,
-    reason TEXT,
-    timestamp TEXT
-)
-""")
-conn.commit()
+# Регулярное выражение для ссылок
+link_regex = re.compile(r'(https?://|t\.me/|telegram\.me/|www\.)', re.IGNORECASE)
 
-def log_violation(user_id, user_name, reason):
-    cursor.execute("INSERT INTO violations (user_id, user_name, reason, timestamp) VALUES (?, ?, ?, ?)",
-                   (user_id, user_name, reason, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
+# Функции для работы с админами
+def get_admin_level(chat_id, user_id):
+    return admins.get(chat_id, {}).get(user_id, 0)
 
-class TriggerState(StatesGroup):
-    waiting_for_keyword = State()
-    waiting_for_response = State()
+def set_admin_level(chat_id, user_id, level):
+    if chat_id not in admins:
+        admins[chat_id] = {}
+    admins[chat_id][user_id] = level
 
-triggers = {}
-user_messages = {}
+def remove_admin(chat_id, user_id):
+    if chat_id in admins and user_id in admins[chat_id]:
+        del admins[chat_id][user_id]
 
-@dp.message_handler(content_types=types.ContentType.NEW_CHAT_MEMBERS)
-async def greet_new_users(message: types.Message):
-    for user in message.new_chat_members:
-        await message.reply(f"Приветствуем, {user.full_name} в {message.chat.title}!")
-    await message.delete()
+def is_owner(chat_member):
+    return chat_member.status == 'creator'
 
-@dp.chat_member_handler()
-async def suppress_join_leave(update: types.ChatMemberUpdated):
+# --- Уведомление в лог с кнопками ---
+async def notify_log(chat_id, text, violator_id=None):
+    keyboard = None
+    if violator_id:
+        keyboard = InlineKeyboardMarkup(row_width=3)
+        keyboard.add(
+            InlineKeyboardButton("Мут 10 мин", callback_data=f"mute:{chat_id}:{violator_id}:10"),
+            InlineKeyboardButton("Мут 1 час", callback_data=f"mute:{chat_id}:{violator_id}:60"),
+            InlineKeyboardButton("Бан 1 час", callback_data=f"ban:{chat_id}:{violator_id}:60"),
+            InlineKeyboardButton("Бан 1 день", callback_data=f"ban:{chat_id}:{violator_id}:1440"),
+            InlineKeyboardButton("Разблокировать", callback_data=f"unmute:{chat_id}:{violator_id}:0"),
+        )
+    await bot.send_message(LOG_CHANNEL_ID, text, reply_markup=keyboard)
+
+# --- Автоудаление уведомлений о входе/выходе ---
+@dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_MEMBERS)
+async def new_member_welcome(message: types.Message):
+    chat_id = message.chat.id
+    new_members = message.new_chat_members
+
+    # Удаляем системное сообщение о новых участниках (если возможно)
     try:
-        await bot.delete_message(update.chat.id, update.chat.id)
+        await message.delete()
     except:
         pass
 
-@dp.message_handler(commands=["admin"])
-async def call_admins(message: types.Message):
-    if message.chat.type != "private":
-        tagged = " ".join([f"<a href='tg://user?id={uid}'>Админ</a>" for uid in admin_ids])
-        await message.reply("Внимание, нужны админы! " + tagged)
+    # Автовыдача админки создателю (уровень 10)
+    chat_admins = await bot.get_chat_administrators(chat_id)
+    owner = next((a for a in chat_admins if is_owner(a)), None)
+    if owner:
+        owner_id = owner.user.id
+        if get_admin_level(chat_id, owner_id) < 10:
+            set_admin_level(chat_id, owner_id, 10)
 
-@dp.message_handler(lambda m: any(c in m.text for c in "ابتثجحخدذرزسشصضطظعغفقكلمنهو"))
-async def anti_arab(message: types.Message):
-    await message.delete()
-    log_violation(message.from_user.id, message.from_user.full_name, "Арабский текст")
-    await bot.send_message(LOG_CHANNEL_ID, f"Арабский текст от {message.from_user.full_name}: {message.text}")
+    for member in new_members:
+        await bot.send_message(chat_id, f"Добро пожаловать, {member.full_name}!")
 
-@dp.message_handler(lambda m: m.text and m.text.lower().count("http") > 2)
-async def anti_spam(message: types.Message):
-    await message.delete()
-    log_violation(message.from_user.id, message.from_user.full_name, "Спам (>2 ссылок)")
-    await bot.send_message(LOG_CHANNEL_ID, f"Спам от {message.from_user.full_name}: {message.text}")
-
-@dp.message_handler()
-async def flood_control_and_triggers(message: types.Message):
-    uid = message.from_user.id
-    user_messages.setdefault(uid, [])
-    user_messages[uid].append(message.date.timestamp())
-    user_messages[uid] = [t for t in user_messages[uid] if message.date.timestamp() - t < 10]
-    if len(user_messages[uid]) > 5:
+@dp.message_handler(content_types=types.ContentTypes.LEFT_CHAT_MEMBER)
+async def left_member_delete_notify(message: types.Message):
+    # Удаляем сообщение о выходе участника
+    try:
         await message.delete()
-        log_violation(uid, message.from_user.full_name, "Флуд (>5 сообщений за 10 секунд)")
-        await bot.send_message(LOG_CHANNEL_ID, f"Флуд от {message.from_user.full_name}")
+    except:
+        pass
 
-    lower = message.text.lower()
-    if lower in triggers:
-        await message.reply(triggers[lower])
+# --- Анти-ссылки ---
+@dp.message_handler()
+async def check_links(message: types.Message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    if message.chat.type in ['group', 'supergroup']:
+        # Проверяем включен ли анти-ссылочный фильтр
+        antilinks_enabled = group_settings.get(chat_id, {}).get('antilinks', False)
+        if antilinks_enabled and link_regex.search(message.text or ''):
+            # Удаляем сообщение со ссылкой
+            try:
+                await message.delete()
+            except:
+                pass
+            # Логируем нарушение
+            text = f"Ссылка от {message.from_user.full_name} (ID: {user_id}) в чате {chat_id} удалена."
+            await notify_log(chat_id, text, violator_id=user_id)
+            return
 
-@dp.message_handler(commands=["add_trigger"])
-async def add_trigger(message: types.Message):
-    if message.from_user.id in admin_ids:
-        await message.answer("Отправьте ключевое слово:")
-        await TriggerState.waiting_for_keyword.set()
+# --- Команда /adminpanel ---
+@dp.message_handler(commands=['adminpanel'])
+async def admin_panel(message: types.Message):
+    if message.chat.type != 'private':
+        await message.reply("Команда доступна только в личных сообщениях.")
+        return
 
-@dp.message_handler(state=TriggerState.waiting_for_keyword)
-async def trigger_keyword(message: types.Message, state: FSMContext):
-    await state.update_data(keyword=message.text.lower())
-    await message.answer("Теперь отправьте ответ:")
-    await TriggerState.waiting_for_response.set()
+    user_id = message.from_user.id
+    user_groups = [chat_id for chat_id, mods in admins.items() if user_id in mods]
+    if not user_groups:
+        await message.reply("Вы не являетесь администратором ни в одной группе.")
+        return
 
-@dp.message_handler(state=TriggerState.waiting_for_response)
-async def trigger_response(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    triggers[data["keyword"]] = message.text
-    await message.answer(f"Триггер '{data['keyword']}' сохранён.")
-    await state.finish()
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        InlineKeyboardButton("Список админов", callback_data="list_admins"),
+        InlineKeyboardButton("Добавить модератора", callback_data="add_mod"),
+        InlineKeyboardButton("Удалить модератора", callback_data="remove_mod"),
+        InlineKeyboardButton("Переключить анти-ссылки", callback_data="toggle_antilinks")
+    )
+    await message.answer("Панель администратора:", reply_markup=keyboard)
 
-@dp.message_handler(commands=["menu"])
-async def admin_menu(message: types.Message):
-    if message.from_user.id in admin_ids:
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("Добавить триггер", callback_data="add_trigger"))
-        kb.add(InlineKeyboardButton("Список триггеров", callback_data="list_triggers"))
-        kb.add(InlineKeyboardButton("Последние нарушения", callback_data="last_violations"))
-        await message.answer("Админ-меню:", reply_markup=kb)
+# --- Обработка нажатий inline кнопок в админ панели и логах ---
+@dp.callback_query_handler(lambda c: c.data and (c.data.startswith("mute:") or c.data.startswith("ban:") or c.data.startswith("unmute:")))
+async def moderation_actions(callback: CallbackQuery):
+    data = callback.data.split(":")
+    action, chat_id_str, user_id_str, duration_str = data
+    chat_id = int(chat_id_str)
+    user_id = int(user_id_str)
+    duration = int(duration_str)
 
-@dp.callback_query_handler(lambda c: c.data == "add_trigger")
-async def cb_add_trigger(callback: types.CallbackQuery):
-    await callback.message.answer("Введите ключевое слово:")
-    await TriggerState.waiting_for_keyword.set()
-    await callback.answer()
+    caller_id = callback.from_user.id
+    caller_level = get_admin_level(chat_id, caller_id)
+    if caller_level < 3:
+        await callback.answer("Нет прав для действия.", show_alert=True)
+        return
 
-@dp.callback_query_handler(lambda c: c.data == "list_triggers")
-async def cb_list_triggers(callback: types.CallbackQuery):
-    if triggers:
-        text = "\n".join([f"{k} => {v}" for k, v in triggers.items()])
+    until_date = None
+    if duration > 0:
+        until_date = datetime.datetime.now() + datetime.timedelta(minutes=duration)
+
+    try:
+        if action == "mute":
+            await bot.restrict_chat_member(chat_id, user_id,
+                                          can_send_messages=False,
+                                          until_date=until_date)
+            await callback.answer(f"Пользователь замучен на {duration} мин.")
+        elif action == "ban":
+            await bot.kick_chat_member(chat_id, user_id, until_date=until_date)
+            await callback.answer(f"Пользователь забанен на {duration} мин.")
+        elif action == "unmute":
+            await bot.restrict_chat_member(chat_id, user_id,
+                                          can_send_messages=True,
+                                          can_send_media_messages=True,
+                                          can_send_other_messages=True,
+                                          can_add_web_page_previews=True)
+            await bot.unban_chat_member(chat_id, user_id)
+            await callback.answer("Пользователь разблокирован.")
+    except Exception as e:
+        await callback.answer(f"Ошибка: {e}", show_alert=True)
+
+@dp.callback_query_handler(lambda c: c.data in ["list_admins", "add_mod", "remove_mod", "toggle_antilinks"])
+async def adminpanel_callbacks(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    user_chats = [chat_id for chat_id in admins if user_id in admins[chat_id]]
+    if not user_chats:
+        await callback.answer("Вы не админ ни в одной группе.", show_alert=True)
+        return
+
+    chat_id = user_chats[0]  # Для простоты — первая группа
+    level = get_admin_level(chat_id, user_id)
+    if level < 3:
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+
+    if callback.data == "list_admins":
+        text = "Админы в группе:\n"
+        for uid, lvl in admins.get(chat_id, {}).items():
+            try:
+                user = await bot.get_chat_member(chat_id, uid)
+                text += f"{user.user.full_name} (ID: {uid}) — уровень {lvl}\n"
+            except:
+                text += f"ID: {uid} — уровень {lvl}\n"
+        await callback.message.edit_text(text)
+    elif callback.data == "add_mod":
+        await callback.message.edit_text("Отправьте ID или пересылайте сообщение пользователя для назначения модератором.")
+        dp.register_message_handler(add_mod_handler, state=None)
+    elif callback.data == "remove_mod":
+        await callback.message.edit_text("Отправьте ID или пересылайте сообщение пользователя для удаления из модераторов.")
+        dp.register_message_handler(remove_mod_handler, state=None)
+    elif callback.data == "toggle_antilinks":
+        current = group_settings.get(chat_id, {}).get('antilinks', False)
+        group_settings.setdefault(chat_id, {})['antilinks'] = not current
+        await callback.answer(f"Анти-ссылки {'включены' if not current else 'выключены'}")
+        await callback.message.edit_text(f"Анти-ссылки теперь {'включены' if not current else 'выключены'}.")
+
+async def add_mod_handler(message: types.Message):
+    chat_id = next(iter(admins))  # Берём первую группу
+    if message.forward_from:
+        user_id = message.forward_from.id
     else:
-        text = "Триггеры ещё не добавлены."
-    await callback.message.answer(text)
-    await callback.answer()
+        try:
+            user_id = int(message.text.strip())
+        except:
+            await message.reply("Не удалось определить пользователя. Перешлите сообщение или отправьте ID.")
+            return
+    set_admin_level(chat_id, user_id, 3)
+    await message.reply(f"Пользователь {user_id} назначен модератором (уровень 3).")
+    dp.message_handlers.unregister(add_mod_handler)
 
-@dp.callback_query_handler(lambda c: c.data == "last_violations")
-async def cb_last_violations(callback: types.CallbackQuery):
-    rows = cursor.execute("SELECT user_name, reason, timestamp FROM violations ORDER BY id DESC LIMIT 10").fetchall()
-    text = "\n".join([f"{r[0]} — {r[1]} ({r[2]})" for r in rows]) if rows else "Нарушений нет."
-    await callback.message.answer("<b>Последние нарушения:</b>\n" + text)
-    await callback.answer()
-
-if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+async def remove_mod_handler(message:
