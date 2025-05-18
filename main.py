@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import re
 from aiogram import Bot, Dispatcher, types
@@ -6,38 +5,29 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatType
 from aiogram.utils import executor
 from aiogram.utils.callback_data import CallbackData
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.dispatcher import FSMContext
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
 API_TOKEN = 'ВАШ_ТОКЕН_БОТА'
-LOG_CHANNEL_ID = -1001234567890  # ID канала для логов (замени на свой)
+LOG_CHANNEL_ID = -1001234567890  # ID канала для логов
 
 logging.basicConfig(level=logging.INFO)
+
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 dp.middleware.setup(LoggingMiddleware())
 
 # Храним настройки по чатам (chat_id -> dict)
 chat_settings = {}
-
-# Храним модераторов по чатам chat_id -> {user_id: level}
+# Модераторы: chat_id -> {user_id: level}
 moderators = {}
 
-# Уровни модерации
-ADMIN_LEVELS = {
-    "owner": 3,
-    "admin": 2,
-    "mod": 1,
-}
-
-# CallbackData для инлайн-кнопок
+ADMIN_LEVELS = {"owner": 3, "admin": 2, "mod": 1}
 admin_cb = CallbackData("admin", "action", "param")
+link_pattern = re.compile(r"(https?://|t\.me/|telegram\.me/)", re.IGNORECASE)
 
-# Проверка ссылок (пример простой)
-link_pattern = re.compile(r"(https?://|t\.me\/|telegram\.me\/)", re.IGNORECASE)
-
-# Антиспам простая проверка: если пользователь отправил более 5 сообщений за 10 секунд
-user_message_times = {}
-
-# По умолчанию настройки
 def default_settings():
     return {
         "anti_arab_enabled": True,
@@ -46,7 +36,7 @@ def default_settings():
         "welcome_enabled": True,
         "welcome_message": "Добро пожаловать, {name}!",
         "log_channel": LOG_CHANNEL_ID,
-        "triggers": {},  # название -> текст ответа
+        "triggers": {},
     }
 
 def get_chat_settings(chat_id):
@@ -65,10 +55,9 @@ def set_mod_level(chat_id, user_id, level):
     else:
         moderators[chat_id][user_id] = level
 
-# --- Утилиты для модерации и логов ---
 async def log_violation(chat_id, user: types.User, reason, message: types.Message):
     settings = get_chat_settings(chat_id)
-    channel_id = settings["log_channel"]
+    channel_id = settings.get("log_channel")
     if not channel_id:
         return
     text = (f"Нарушение в чате {chat_id}\n"
@@ -82,11 +71,32 @@ async def log_violation(chat_id, user: types.User, reason, message: types.Messag
     )
     await bot.send_message(channel_id, text, reply_markup=markup)
 
-# --- Хэндлеры команд и событий ---
+# FSM для установки приветствия
+class WelcomeState(StatesGroup):
+    waiting_for_welcome = State()
+
+# FSM для добавления модератора
+class AddModState(StatesGroup):
+    waiting_for_user_id = State()
+
+# FSM для удаления модератора
+class RemoveModState(StatesGroup):
+    waiting_for_user_id = State()
+
+# FSM для добавления триггера
+class AddTriggerState(StatesGroup):
+    waiting_for_trigger_word = State()
+    waiting_for_trigger_response = State()
+
+# FSM для удаления триггера
+class RemoveTriggerState(StatesGroup):
+    waiting_for_trigger_word = State()
+
+# --- Команды ---
 
 @dp.message_handler(commands=["start"])
 async def cmd_start(message: types.Message):
-    await message.answer("Привет! Я бот-модератор. Используй /admin для управления.")
+    await message.answer("Привет! Я бот-модератор. Используйте /admin для управления.")
 
 @dp.message_handler(commands=["admin"])
 async def cmd_admin(message: types.Message):
@@ -94,8 +104,7 @@ async def cmd_admin(message: types.Message):
         await message.answer("Пожалуйста, обращайся ко мне в ЛС для управления.")
         return
     user_id = message.from_user.id
-    # Найдем все чаты, где юзер — модератор
-    mods = [(cid, lvl) for cid, mods in moderators.items() for uid, lvl in mods.items() if uid == user_id]
+    mods = [(cid, lvl) for cid, mods_dict in moderators.items() for uid, lvl in mods_dict.items() if uid == user_id]
     if not mods:
         await message.answer("У вас нет модераторских прав ни в одном чате.")
         return
@@ -103,6 +112,8 @@ async def cmd_admin(message: types.Message):
     for cid, lvl in mods:
         kb.insert(InlineKeyboardButton(f"Чат {cid} (уровень {lvl})", callback_data=admin_cb.new(action="chat_menu", param=str(cid))))
     await message.answer("Выберите чат для управления:", reply_markup=kb)
+
+# --- Меню управления чатами и настройками ---
 
 @dp.callback_query_handler(admin_cb.filter(action="chat_menu"))
 async def admin_chat_menu(cq: types.CallbackQuery, callback_data: dict):
@@ -113,7 +124,6 @@ async def admin_chat_menu(cq: types.CallbackQuery, callback_data: dict):
         await cq.answer("Нет доступа", show_alert=True)
         return
     settings = get_chat_settings(chat_id)
-
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton(f"Антиараб: {'Вкл' if settings['anti_arab_enabled'] else 'Выкл'}", callback_data=admin_cb.new(action="toggle_anti_arab", param=str(chat_id))),
@@ -137,6 +147,7 @@ async def toggle_setting(cq: types.CallbackQuery, callback_data: dict):
         await cq.answer("Недостаточно прав", show_alert=True)
         return
     settings = get_chat_settings(chat_id)
+
     if action == "toggle_anti_arab":
         settings["anti_arab_enabled"] = not settings["anti_arab_enabled"]
         status = "включён" if settings["anti_arab_enabled"] else "выключен"
@@ -153,49 +164,18 @@ async def toggle_setting(cq: types.CallbackQuery, callback_data: dict):
         settings["welcome_enabled"] = not settings["welcome_enabled"]
         status = "включено" if settings["welcome_enabled"] else "выключено"
         await cq.answer(f"Приветствие {status}.", show_alert=True)
-    # Обновим меню
-    await admin_chat_menu(cq, {"param": str(chat_id), "action":"chat_menu"})
+
+    # Обновляем меню
+    await admin_chat_menu(cq, {"param": str(chat_id), "action": "chat_menu"})
+
+# --- Настройка приветствия через FSM ---
 
 @dp.callback_query_handler(admin_cb.filter(action="set_welcome"))
 async def set_welcome_start(cq: types.CallbackQuery, callback_data: dict):
     chat_id = int(callback_data["param"])
     user_id = cq.from_user.id
-    level = get_mod_level(chat_id, user_id)
-    if level < 2:
+    if get_mod_level(chat_id, user_id) < 2:
         await cq.answer("Недостаточно прав", show_alert=True)
         return
-    await cq.answer("Напишите новое приветствие. Используйте {name} для вставки имени.", show_alert=True)
-    await cq.message.answer("Введите новое приветственное сообщение для чата (используйте {name} для имени):")
-
-    @dp.message_handler(lambda m: m.from_user.id == user_id, content_types=types.ContentTypes.TEXT)
-    async def set_welcome_message(message: types.Message):
-        chat_settings[chat_id]["welcome_message"] = message.text
-        await message.answer("Приветствие обновлено.")
-        # Удаляем этот хэндлер, чтобы не ловить повторно
-        dp.message_handlers.unregister(set_welcome_message)
-
-@dp.callback_query_handler(admin_cb.filter(action="manage_mods"))
-async def manage_mods_menu(cq: types.CallbackQuery, callback_data: dict):
-    chat_id = int(callback_data["param"])
-    user_id = cq.from_user.id
-    level = get_mod_level(chat_id, user_id)
-    if level < 3:
-        await cq.answer("Только создатель может управлять модераторами", show_alert=True)
-        return
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("Добавить модератора", callback_data=admin_cb.new(action="add_mod", param=str(chat_id))),
-           InlineKeyboardButton("Удалить модератора", callback_data=admin_cb.new(action="remove_mod", param=str(chat_id))),
-           InlineKeyboardButton("Назад", callback_data=admin_cb.new(action="chat_menu", param=str(chat_id))))
-    await cq.message.edit_text("Управление модераторами", reply_markup=kb)
-await cq.answer()
-
-@dp.callback_query_handler(admin_cb.filter(action="add_mod"))
-async def add_mod_start(cq: types.CallbackQuery, callback_data: dict):
-    chat_id = int(callback_data["param"])
-    user_id = cq.from_user.id
-    level = get_mod_level(chat_id, user_id)
-    if level < 3:
-        await cq.message.answer("У вас недостаточно прав для добавления модераторов.")
-        return
-    # Тут продолжайте реализацию функции, например:
-    await cq.message.answer("Введите ID пользователя для повышения до модератора.")
+    await cq.answer("Напишите новое приветствие. Используйте {name} для имени.", show_alert=True)
+    await WelcomeState.wait
