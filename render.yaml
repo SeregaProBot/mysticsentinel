@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: mysticsentinel
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot/main.py"
+    autoDeploy: false
