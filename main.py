@@ -187,7 +187,7 @@ async def manage_mods_menu(cq: types.CallbackQuery, callback_data: dict):
            InlineKeyboardButton("Удалить модератора", callback_data=admin_cb.new(action="remove_mod", param=str(chat_id))),
            InlineKeyboardButton("Назад", callback_data=admin_cb.new(action="chat_menu", param=str(chat_id))))
     await cq.message.edit_text("Управление модераторами", reply_markup=kb)
-    await cq.answer()
+await cq.answer()
 
 @dp.callback_query_handler(admin_cb.filter(action="add_mod"))
 async def add_mod_start(cq: types.CallbackQuery, callback_data: dict):
@@ -195,3 +195,7 @@ async def add_mod_start(cq: types.CallbackQuery, callback_data: dict):
     user_id = cq.from_user.id
     level = get_mod_level(chat_id, user_id)
     if level < 3:
+        await cq.message.answer("У вас недостаточно прав для добавления модераторов.")
+        return
+    # Тут продолжайте реализацию функции, например:
+    await cq.message.answer("Введите ID пользователя для повышения до модератора.")
