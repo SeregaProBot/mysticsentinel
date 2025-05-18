@@ -74,8 +74,7 @@ async def anti_arab(message: types.Message):
 async def anti_spam(message: types.Message):
     await message.delete()
     log_violation(message.from_user.id, message.from_user.full_name, "Спам (>2 ссылок)")
-    await bot.send_message(LOG_CHANNEL_ID, f"Спам от {message.from_user.full_name}:
-{message.text}")
+    await bot.send_message(LOG_CHANNEL_ID, f"Спам от {message.from_user.full_name}: {message.text}")
 
 @dp.message_handler()
 async def flood_control_and_triggers(message: types.Message):
