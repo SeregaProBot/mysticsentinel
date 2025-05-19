@@ -1,9 +1,11 @@
 import sqlite3
+from pathlib import Path
+
+DB_PATH = Path("mystic.db")
 
 def init_db():
-    conn = sqlite3.connect("mystic.db")
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS warns (
         user_id INTEGER,
@@ -11,14 +13,8 @@ def init_db():
         count INTEGER DEFAULT 0,
         PRIMARY KEY (user_id, chat_id)
     )""")
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS blacklist (
-        user_id INTEGER PRIMARY KEY,
-        reason TEXT
-    )""")
-    
     conn.commit()
     conn.close()
 
-init_db()
+if __name__ == "__main__":
+    init_db()
