@@ -9,9 +9,9 @@ from telegram.ext import (
 import re
 import asyncio
 
-TOKEN = "ВАШ_ТОКЕН_ЗДЕСЬ"
-LOG_CHANNEL_ID = -1001234567890  # ID канала для логов (замени на свой)
-OWNER_ID = 123456789  # Твой ID (если нужно)
+TOKEN = "ВАШ_ТОКЕН7954709613:AAFccAMIVagLzxheXI94ryTVHwqYGmwkgx4"
+LOG_CHANNEL_ID = -1002625004448  # ID канала для логов (замени на свой)
+OWNER_ID = 692826378  # Твой ID (если нужно)
 
 # Хранилище (в реальности заменить на БД)
 ADMINS = set()
