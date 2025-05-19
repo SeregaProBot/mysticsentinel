@@ -9,7 +9,7 @@ from telegram.ext import (
 import re
 import asyncio
 
-TOKEN = "ВАШ_ТОКЕН7954709613:AAFccAMIVagLzxheXI94ryTVHwqYGmwkgx4"
+TOKEN = "7954709613:AAFccAMIVagLzxheXI94ryTVHwqYGmwkgx4"
 LOG_CHANNEL_ID = -1002625004448  # ID канала для логов (замени на свой)
 OWNER_ID = 692826378  # Твой ID (если нужно)
 
