@@ -10,9 +10,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- Конфигурация --- #
 logging.basicConfig(level=logging.INFO)
-BOT_TOKEN = "ВАШ_ТОКЕН"
-ADMINS = [123456789]  # Ваш ID
-MODERATORS = [987654321]
+BOT_TOKEN = "7954709613:AAFccAMIVagLzxheXI94ryTVHwqYGmwkgx4"
+ADMINS = [692826378]  # Ваш ID
+MODERATORS = [869747941]
 
 # --- Инициализация --- #
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.MARKDOWN)
