@@ -1,0 +1,3 @@
+BOT_TOKEN = "7954709613:AAFccAMIVagLzxheXI94ryTVHwqYGmwkgx4"  
+ADMINS = [692826378]  # ID админов  
+MODERATORS = [869747941]  # ID модераторов
