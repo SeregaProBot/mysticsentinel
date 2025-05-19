@@ -209,9 +209,20 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def callback_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     if query.data == "show_admins":
         text = "Администраторы бота:\n" + "\n".join(str(a) for a in ADMINS)
-        await query.edit_message_text(text)
+        # Меняем кнопку на "Открыт"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Открыт", callback_data="opened_admins")]
+        ])
+        await query.edit_message_text(text, reply_markup=keyboard)
+    elif query.data == "opened_admins":
+        # Возвращаем исходное состояние панели
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Посмотреть админов бота", callback_data="show_admins")]
+        ])
+        await query.edit_message_text("Панель администратора:", reply_markup=keyboard)
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -223,8 +234,8 @@ def main():
 
     app.add_handler(ChatMemberHandler(chat_member_update, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(CallbackQueryHandler(callback_admin_panel, pattern="show_admins"))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(mute|ban|unmute|unban):"))
+    app.add_handler(CallbackQueryHandler(callback_admin_panel, pattern="^(show_admins|opened_admins)$"))
 
     print("Бот запущен...")
     app.run_polling()
