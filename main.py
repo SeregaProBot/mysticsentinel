@@ -6,6 +6,18 @@ except ImportError as e:
     print(f"Детали: {e}")
     exit(1)
 
+import asyncio  # Добавьте эту строку в самом верху
+import logging
+import sqlite3
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
+from config import BOT_TOKEN, ADMINS, MODERATORS
+
+# ... весь остальной ваш код ...
+
+
+
 import logging
 import sqlite3
 from aiogram import Bot, Dispatcher, types, F
@@ -85,3 +97,12 @@ async def main():
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
+    
+    
+    
+    async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(main())  # Теперь ошибки не будет
