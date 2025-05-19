@@ -8,26 +8,21 @@ from telegram.ext import (
 )
 import re
 import asyncio
+import time
 
 TOKEN = "7954709613:AAFccAMIVagLzxheXI94ryTVHwqYGmwkgx4"
-LOG_CHANNEL_ID = -1002625004448  # ID канала для логов (замени на свой)
-OWNER_ID = 692826378  # Твой ID (если нужно)
+LOG_CHANNEL_ID = -1002625004448
+OWNER_ID = 692826378
 
-# Хранилище (в реальности заменить на БД)
 ADMINS = set()
 ADMINS.add(OWNER_ID)
 
-# Настройки модерации
-ANTISPAM_THRESHOLD = 3  # Кол-во сообщений в секунду
+ANTISPAM_THRESHOLD = 3
 user_message_times = {}
 
-# Слова для антимата
-BAD_WORDS = {"плохое_слово1", "плохое_слово2"}  # добавь свои слова
-
-# Антилинк (если нужно)
+BAD_WORDS = {"плохое_слово1", "плохое_слово2"}
 LINK_PATTERN = re.compile(r"(https?://|t\.me/|telegram\.me/)")
 
-# Шлюхобот - автоответы
 AUTO_REPLY = {
     "привет": "Привет! Чем могу помочь?",
     "как дела": "Отлично, а у тебя?",
@@ -35,10 +30,7 @@ AUTO_REPLY = {
     "бот": "Я бот-модератор с автоответами.",
 }
 
-# Приветствие (редактируемое)
 GREETINGS = {}
-
-# Уровни модерации (пример, можно расширить)
 USER_LEVELS = {}
 
 async def log_to_channel(context: ContextTypes.DEFAULT_TYPE, text: str, keyboard=None):
@@ -47,7 +39,6 @@ async def log_to_channel(context: ContextTypes.DEFAULT_TYPE, text: str, keyboard
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я бот-модератор с автоответами и полным функционалом.")
 
-# Автоназначение владельца группы админом в боте
 async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member = update.my_chat_member
     new_status = chat_member.new_chat_member.status
@@ -60,11 +51,9 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 owner_id = admin.user.id
                 if owner_id not in ADMINS:
                     ADMINS.add(owner_id)
-                    print(f"Добавлен админ: {owner_id}")
                     await context.bot.send_message(chat.id, f"Пользователь {admin.user.full_name} назначен администратором бота.")
                 break
 
-# Команда для вывода админов
 async def admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(ADMINS) == 0:
         await update.message.reply_text("Пока нет администраторов.")
@@ -72,21 +61,18 @@ async def admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "Администраторы бота:\n" + "\n".join(str(a) for a in ADMINS)
         await update.message.reply_text(text)
 
-# Антиспам - проверка частоты сообщений
 def check_spam(user_id):
-    import time
     now = time.time()
     times = user_message_times.get(user_id, [])
-    times = [t for t in times if now - t < 1]  # за последнюю секунду
+    times = [t for t in times if now - t < 1]
     times.append(now)
     user_message_times[user_id] = times
     return len(times) > ANTISPAM_THRESHOLD
 
-# Мут и бан по кнопкам в логе
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data  # формат: action:user_id:chat_id
+    data = query.data
     parts = data.split(":")
     if len(parts) != 3:
         return
@@ -94,17 +80,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = int(user_id_str)
     chat_id = int(chat_id_str)
 
-    if update.effective_user.id not in ADMINS:
+    if query.from_user.id not in ADMINS:
         await query.edit_message_text("Только администраторы могут использовать эти кнопки.")
         return
 
     try:
         if action == "mute":
-            until_date = None  # Навсегда
             await context.bot.restrict_chat_member(
                 chat_id, user_id,
-                permissions=ChatPermissions(can_send_messages=False),
-                until_date=until_date
+                permissions=ChatPermissions(can_send_messages=False)
             )
             await query.edit_message_text(f"Пользователь {user_id} замучен.")
         elif action == "ban":
@@ -116,7 +100,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 permissions=ChatPermissions(can_send_messages=True,
                                             can_send_media_messages=True,
                                             can_send_other_messages=True,
-                                            can_add_web_page_previews=True),
+                                            can_add_web_page_previews=True)
             )
             await query.edit_message_text(f"Пользователь {user_id} размучен.")
         elif action == "unban":
@@ -125,7 +109,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await query.edit_message_text(f"Ошибка: {e}")
 
-# Логирование с кнопками
 async def log_user_action(context: ContextTypes.DEFAULT_TYPE, chat_id, user_id, user_name, action):
     text = f"В чате {chat_id} пользователь {user_name} ({user_id}) {action}."
     keyboard = InlineKeyboardMarkup([
@@ -136,17 +119,14 @@ async def log_user_action(context: ContextTypes.DEFAULT_TYPE, chat_id, user_id, 
     ])
     await log_to_channel(context, text, keyboard)
 
-# Обработка сообщений: антиараб, антиспам, антимат, антилинк, шлюхобот
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     user = message.from_user
     text = message.text.lower()
 
-    # Игнорим ботов
     if user.is_bot:
         return
 
-    # Проверка антиспама
     if check_spam(user.id):
         try:
             await message.delete()
@@ -155,7 +135,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await log_user_action(context, message.chat_id, user.id, user.full_name, "спамил (сообщение удалено)")
         return
 
-    # Антимат
     if any(bad_word in text for bad_word in BAD_WORDS):
         try:
             await message.delete()
@@ -164,7 +143,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await log_user_action(context, message.chat_id, user.id, user.full_name, "использовал мат (сообщение удалено)")
         return
 
-    # Антилинк
     if LINK_PATTERN.search(text):
         try:
             await message.delete()
@@ -173,18 +151,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await log_user_action(context, message.chat_id, user.id, user.full_name, "разместил ссылку (сообщение удалено)")
         return
 
-    # Приветствие по триггеру (пример)
     if "привет" in text:
         greet_text = GREETINGS.get(message.chat_id, "Привет, {name}! Добро пожаловать!")
         await message.reply_text(greet_text.format(name=user.first_name))
 
-    # Шлюхобот (автоответ)
     for trigger, response in AUTO_REPLY.items():
         if trigger in text:
             await message.reply_text(response)
             break
 
-# Команда вызова админов (в чат)
 async def command_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     admins_in_chat = await context.bot.get_chat_administrators(chat.id)
@@ -194,35 +169,22 @@ async def command_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mentions.append(f"[{user.first_name}](tg://user?id={user.id})")
     await update.message.reply_text("Администраторы чата: " + ", ".join(mentions), parse_mode="Markdown")
 
-# Админ-панель (упрощённо)
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMINS:
         await update.message.reply_text("У вас нет доступа к админ-панели.")
         return
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Посмотреть админов бота", callback_data="show_admins")],
-        # Можно добавить кнопки для настройки
+        [InlineKeyboardButton("Открыть админ-панель", callback_data="admin_panel_open")]
     ])
     await update.message.reply_text("Панель администратора:", reply_markup=keyboard)
 
 async def callback_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
-    if query.data == "show_admins":
+    if query.data == "admin_panel_open":
         text = "Администраторы бота:\n" + "\n".join(str(a) for a in ADMINS)
-        # Меняем кнопку на "Открыт"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Открыт", callback_data="opened_admins")]
-        ])
-        await query.edit_message_text(text, reply_markup=keyboard)
-    elif query.data == "opened_admins":
-        # Возвращаем исходное состояние панели
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Посмотреть админов бота", callback_data="show_admins")]
-        ])
-        await query.edit_message_text("Панель администратора:", reply_markup=keyboard)
+        await query.edit_message_text(text)
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -234,8 +196,8 @@ def main():
 
     app.add_handler(ChatMemberHandler(chat_member_update, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(mute|ban|unmute|unban):"))
-    app.add_handler(CallbackQueryHandler(callback_admin_panel, pattern="^(show_admins|opened_admins)$"))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(mute|ban|unmute|unban):\d+:-?\d+$"))
+    app.add_handler(CallbackQueryHandler(callback_admin_panel, pattern="admin_panel_open"))
 
     print("Бот запущен...")
     app.run_polling()
