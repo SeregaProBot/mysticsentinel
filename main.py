@@ -1,195 +1,91 @@
-import sqlite3
-import re
-import time
-import asyncio
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ChatPermissions
+import logging
+from aiogram import Bot, Dispatcher, types, executor
+from aiogram.dispatcher import FSMContext
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher.filters import Command, Text
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
+from config import BOT_TOKEN, ADMINS, MODERATORS
+
+# Настройка логов
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=BOT_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
+
+# Права модераторов и админов
+ADMINS = ADMINS  # Список ID админов (из config.py)
+MODERATORS = MODERATORS  # Список ID модераторов
+
+# Триггеры (можно расширять)
+TRIGGERS = {
+    "оскорбления": ["дурак", "идиот", "тупой"],
+    "реклама": ["купить", "бесплатно", "перейди"],
+}
+
+# Приветственное сообщение
+WELCOME_MSG = (
+    "🔮 Добро пожаловать в {chat_title}, {user_name}! \n\n"
+    "⚠️ Соблюдайте правила: \n"
+    "— Не спамьте \n"
+    "— Не оскорбляйте других \n"
+    "— Не используйте арабские символы \n\n"
+    "Наслаждайтесь общением! ✨"
 )
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    filters, ContextTypes, CallbackQueryHandler
-)
 
-TOKEN = "7954709613:AAFccAMIVagLzxheXI94ryTVHwqYGmwkgx4"
-DEFAULT_LOG_CHANNEL_ID = -1002625004448
-OWNER_ID = 692826378
-ADMINS = set([OWNER_ID])
-BAD_WORDS = {"плохое_слово1", "плохое_слово2", "плохое_слово3"}
-LINK_PATTERN = re.compile(r"(https?://|t\.me/|telegram\.me/)")
-user_message_times = {}
-ANTISPAM_THRESHOLD = 3
-SHLYUHO_BOT_PHRASES = {"давай знакомиться", "ищу парня", "ищу девушку"}
+# ========== ОСНОВНЫЕ КОМАНДЫ ========== #
+@dp.message_handler(commands=['start'])
+async def start(message: types.Message):
+    if message.chat.type == 'private':
+        await message.answer("🔮 *Mystic Sentinel* — твой магический страж. \n"
+                           "Используй /help для списка команд.", parse_mode="Markdown")
 
-def init_db():
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS greetings (
-        chat_id INTEGER PRIMARY KEY,
-        text TEXT
-    )""")
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS features (
-        chat_id INTEGER,
-        feature_name TEXT,
-        enabled INTEGER,
-        PRIMARY KEY (chat_id, feature_name)
-    )""")
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS log_channels (
-        chat_id INTEGER PRIMARY KEY,
-        log_channel_id INTEGER
-    )""")
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS admins (
-        chat_id INTEGER,
-        user_id INTEGER,
-        PRIMARY KEY (chat_id, user_id)
-    )""")
-    conn.commit()
-    conn.close()
+# ========== АДМИН-МЕНЮ (В ЛИЧКЕ) ========== #
+@dp.message_handler(Command("admin"), user_id=ADMINS)
+async def admin_menu(message: types.Message):
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    buttons = [
+        InlineKeyboardButton("🛡 Анти-спам", callback_data="antispam"),
+        InlineKeyboardButton("🔞 Анти-араб", callback_data="antiarab"),
+        InlineKeyboardButton("⚡ Триггеры", callback_data="triggers"),
+        InlineKeyboardButton("👥 Управление", callback_data="manage"),
+    ]
+    keyboard.add(*buttons)
+    await message.answer("⚙️ *Админ-панель Mystic Sentinel*", reply_markup=keyboard, parse_mode="Markdown")
 
-def get_feature(chat_id, feature):
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("SELECT enabled FROM features WHERE chat_id=? AND feature_name=?", (chat_id, feature))
-    row = cur.fetchone()
-    conn.close()
-    return row[0] == 1 if row else True
+# ========== АНТИ-АРАБ ========== #
+@dp.message_handler(lambda msg: any(char in "؀-ۿ" for char in msg.text))
+async def anti_arab(message: types.Message):
+    await message.delete()
+    await message.answer(f"🚫 {message.from_user.mention}, арабские символы запрещены!")
 
-def toggle_feature(chat_id, feature):
-    current = get_feature(chat_id, feature)
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("REPLACE INTO features (chat_id, feature_name, enabled) VALUES (?, ?, ?)",
-                (chat_id, feature, 0 if current else 1))
-    conn.commit()
-    conn.close()
-    return not current
+# ========== АНТИ-СПАМ ========== #
+@dp.message_handler(content_types=types.ContentType.ANY, is_automatic_forward=True)
+async def anti_spam(message: types.Message):
+    if message.from_user.id not in ADMINS + MODERATORS:
+        await message.delete()
+        await bot.restrict_chat_member(message.chat.id, message.from_user.id, ChatPermissions(can_send_messages=False))
 
-def get_greeting(chat_id):
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("SELECT text FROM greetings WHERE chat_id=?", (chat_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row[0] if row else "Привет, {name}! Добро пожаловать!"
+# ========== ПРИВЕТСТВИЕ НОВЫХ ========== #
+@dp.message_handler(content_types=types.ContentType.NEW_CHAT_MEMBERS)
+async def welcome_new_member(message: types.Message):
+    for user in message.new_chat_members:
+        await message.answer(WELCOME_MSG.format(
+            chat_title=message.chat.title,
+            user_name=user.get_mention()
+        ))
+    await message.delete()  # Удаляем системное сообщение
 
-def set_greeting(chat_id, text):
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("REPLACE INTO greetings (chat_id, text) VALUES (?, ?)", (chat_id, text))
-    conn.commit()
-    conn.close()
+# ========== УДАЛЕНИЕ СООБЩЕНИЙ О ВЫХОДЕ ========== #
+@dp.message_handler(content_types=types.ContentType.LEFT_CHAT_MEMBER)
+async def delete_left_member(message: types.Message):
+    await message.delete()
 
-def get_log_channel(chat_id):
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("SELECT log_channel_id FROM log_channels WHERE chat_id=?", (chat_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row[0] if row else DEFAULT_LOG_CHANNEL_ID
+# ========== КОМАНДА @ADMIN ========== #
+@dp.message_handler(Text(startswith="@admin"))
+async def call_admin(message: types.Message):
+    admins_mention = " ".join([f"👑 {admin}" for admin in ADMINS])
+    await message.reply(f"Администраторы, внимание! {admins_mention}")
 
-def set_log_channel(chat_id, log_channel_id):
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("REPLACE INTO log_channels (chat_id, log_channel_id) VALUES (?, ?)", (chat_id, log_channel_id))
-    conn.commit()
-    conn.close()
-
-def is_admin(chat_id, user_id):
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("SELECT 1 FROM admins WHERE chat_id=? AND user_id=?", (chat_id, user_id))
-    result = cur.fetchone()
-    conn.close()
-    return result is not None or user_id == OWNER_ID
-
-def add_admin(chat_id, user_id):
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("REPLACE INTO admins (chat_id, user_id) VALUES (?, ?)", (chat_id, user_id))
-    conn.commit()
-    conn.close()
-
-def remove_admin(chat_id, user_id):
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("DELETE FROM admins WHERE chat_id=? AND user_id=?", (chat_id, user_id))
-    conn.commit()
-    conn.close()
-
-async def log_to_channel(context, chat_id, text, keyboard=None):
-    log_channel_id = get_log_channel(chat_id)
-    await context.bot.send_message(chat_id=log_channel_id, text=text, reply_markup=keyboard)
-
-def check_spam(user_id):
-    now = time.time()
-    times = user_message_times.get(user_id, [])
-    times = [t for t in times if now - t < 1]
-    times.append(now)
-    user_message_times[user_id] = times
-    return len(times) > ANTISPAM_THRESHOLD
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот-модератор с SQLite и панелью управления.")
-
-async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM admins WHERE chat_id=?", (chat_id,))
-    rows = cur.fetchall()
-    conn.close()
-    admin_ids = [row[0] for row in rows]
-    admin_mentions = [f"[{(await context.bot.get_chat_member(chat_id, uid)).user.full_name}](tg://user?id={uid})" for uid in admin_ids]
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Вызвать админа", callback_data="call_admin")]
-    ])
-    await update.message.reply_text("Администраторы:\n" + "\n".join(admin_mentions), parse_mode="Markdown", reply_markup=keyboard)
-
-async def call_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat.id
-    conn = sqlite3.connect("modbot_settings.db")
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM admins WHERE chat_id=?", (chat_id,))
-    rows = cur.fetchall()
-    conn.close()
-    for row in rows:
-        try:
-            await context.bot.send_message(chat_id=row[0], text=f"Пользователь {query.from_user.full_name} вызвал администратора в чате {chat_id}.")
-        except:
-            pass
-    await query.edit_message_text("Администраторы уведомлены.")
-
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    if not is_admin(chat_id, user_id):
-        await update.message.reply_text("Нет доступа.")
-        return
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Антимат", callback_data="toggle:badwords"),
-         InlineKeyboardButton("Антилинк", callback_data="toggle:antilink")],
-        [InlineKeyboardButton("Антиспам", callback_data="toggle:antispam"),
-         InlineKeyboardButton("Приветствие", callback_data="toggle:greetings")],
-        [InlineKeyboardButton("Редактировать приветствие", callback_data="edit:greeting")],
-        [InlineKeyboardButton("Добавить админа", callback_data="add_admin"),
-         InlineKeyboardButton("Удалить админа", callback_data="remove_admin")],
-        [InlineKeyboardButton("Установить лог-канал", callback_data="set_log_channel")]
-    ])
-    await update.message.reply_text("Панель администратора:", reply_markup=keyboard)
-
-async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    chat_id = query.message.chat.id
-    user_id = query.from_user.id
-    if not is_admin(chat_id, user_id):
-        await query.edit_message_text("Нет доступа.")
-        return
- 
+# ========== ЗАПУСК ========== #
+if __name__ == '__main__':
+    executor.start_polling(dp, skip_updates=True)
