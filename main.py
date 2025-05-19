@@ -1,3 +1,11 @@
+try:
+    from aiogram import Bot, Dispatcher, types, F
+    from aiogram.filters import Command
+except ImportError as e:
+    print("Ошибка импорта. Установите зависимости: pip install -r requirements.txt")
+    print(f"Детали: {e}")
+    exit(1)
+
 import logging
 import sqlite3
 from aiogram import Bot, Dispatcher, types, F
