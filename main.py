@@ -1,91 +1,79 @@
 import logging
-from aiogram import Bot, Dispatcher, types, executor
-from aiogram.dispatcher import FSMContext
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher.filters import Command, Text
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
+import sqlite3
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import ChatPermissions
 from config import BOT_TOKEN, ADMINS, MODERATORS
 
-# Настройка логов
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+# --- Настройка бота --- #
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.MARKDOWN)
+dp = Dispatcher()
 
-# Права модераторов и админов
-ADMINS = ADMINS  # Список ID админов (из config.py)
-MODERATORS = MODERATORS  # Список ID модераторов
-
-# Триггеры (можно расширять)
+# --- Константы --- #
+WELCOME_MSG = "🔮 Добро пожаловать, {user_mention}! Читай правила."
 TRIGGERS = {
-    "оскорбления": ["дурак", "идиот", "тупой"],
-    "реклама": ["купить", "бесплатно", "перейди"],
+    "мат": ["дурак", "идиот", "тупой"],
+    "реклама": ["купить", "бесплатно", "http"]
 }
+MAX_WARNS = 3
 
-# Приветственное сообщение
-WELCOME_MSG = (
-    "🔮 Добро пожаловать в {chat_title}, {user_name}! \n\n"
-    "⚠️ Соблюдайте правила: \n"
-    "— Не спамьте \n"
-    "— Не оскорбляйте других \n"
-    "— Не используйте арабские символы \n\n"
-    "Наслаждайтесь общением! ✨"
-)
+# --- База данных --- #
+def add_warn(user_id: int, chat_id: int):
+    conn = sqlite3.connect("mystic.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO warns VALUES (?, ?, 0)", (user_id, chat_id))
+    cursor.execute("UPDATE warns SET count = count + 1 WHERE user_id = ? AND chat_id = ?", (user_id, chat_id))
+    conn.commit()
+    warns = cursor.execute("SELECT count FROM warns WHERE user_id = ? AND chat_id = ?", (user_id, chat_id)).fetchone()[0]
+    conn.close()
+    return warns
 
-# ========== ОСНОВНЫЕ КОМАНДЫ ========== #
-@dp.message_handler(commands=['start'])
+# --- Команды --- #
+@dp.message(Command("start"))
 async def start(message: types.Message):
-    if message.chat.type == 'private':
-        await message.answer("🔮 *Mystic Sentinel* — твой магический страж. \n"
-                           "Используй /help для списка команд.", parse_mode="Markdown")
+    await message.answer("🔮 Mystic Sentinel — магический страж вашего чата.")
 
-# ========== АДМИН-МЕНЮ (В ЛИЧКЕ) ========== #
-@dp.message_handler(Command("admin"), user_id=ADMINS)
-async def admin_menu(message: types.Message):
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    buttons = [
-        InlineKeyboardButton("🛡 Анти-спам", callback_data="antispam"),
-        InlineKeyboardButton("🔞 Анти-араб", callback_data="antiarab"),
-        InlineKeyboardButton("⚡ Триггеры", callback_data="triggers"),
-        InlineKeyboardButton("👥 Управление", callback_data="manage"),
-    ]
-    keyboard.add(*buttons)
-    await message.answer("⚙️ *Админ-панель Mystic Sentinel*", reply_markup=keyboard, parse_mode="Markdown")
+@dp.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if message.from_user.id in ADMINS:
+        builder = InlineKeyboardBuilder()
+        builder.add(types.InlineKeyboardButton(text="🛡 Анти-спам", callback_data="antispam"))
+        builder.add(types.InlineKeyboardButton(text="🔞 Анти-араб", callback_data="antiarab"))
+        await message.answer("⚙️ Админ-панель:", reply_markup=builder.as_markup())
 
-# ========== АНТИ-АРАБ ========== #
-@dp.message_handler(lambda msg: any(char in "؀-ۿ" for char in msg.text))
+# --- Модерация --- #
+@dp.message(F.text.contains("араб"))
 async def anti_arab(message: types.Message):
     await message.delete()
     await message.answer(f"🚫 {message.from_user.mention}, арабские символы запрещены!")
 
-# ========== АНТИ-СПАМ ========== #
-@dp.message_handler(content_types=types.ContentType.ANY, is_automatic_forward=True)
-async def anti_spam(message: types.Message):
-    if message.from_user.id not in ADMINS + MODERATORS:
-        await message.delete()
-        await bot.restrict_chat_member(message.chat.id, message.from_user.id, ChatPermissions(can_send_messages=False))
+@dp.message(lambda msg: any(word in msg.text.lower() for words in TRIGGERS.values() for word in words))
+async def anti_trigger(message: types.Message):
+    warns = add_warn(message.from_user.id, message.chat.id)
+    await message.delete()
+    if warns >= MAX_WARNS:
+        await message.answer(f"⛔ {message.from_user.mention} получил бан за {MAX_WARNS} варна!")
+        await bot.ban_chat_member(message.chat.id, message.from_user.id)
+    else:
+        await message.answer(f"⚠️ {message.from_user.mention}, триггер! Варнов: {warns}/{MAX_WARNS}")
 
-# ========== ПРИВЕТСТВИЕ НОВЫХ ========== #
-@dp.message_handler(content_types=types.ContentType.NEW_CHAT_MEMBERS)
-async def welcome_new_member(message: types.Message):
+# --- Системные события --- #
+@dp.message(F.new_chat_members)
+async def welcome(message: types.Message):
     for user in message.new_chat_members:
-        await message.answer(WELCOME_MSG.format(
-            chat_title=message.chat.title,
-            user_name=user.get_mention()
-        ))
-    await message.delete()  # Удаляем системное сообщение
-
-# ========== УДАЛЕНИЕ СООБЩЕНИЙ О ВЫХОДЕ ========== #
-@dp.message_handler(content_types=types.ContentType.LEFT_CHAT_MEMBER)
-async def delete_left_member(message: types.Message):
+        await message.answer(WELCOME_MSG.format(user_mention=user.mention))
     await message.delete()
 
-# ========== КОМАНДА @ADMIN ========== #
-@dp.message_handler(Text(startswith="@admin"))
-async def call_admin(message: types.Message):
-    admins_mention = " ".join([f"👑 {admin}" for admin in ADMINS])
-    await message.reply(f"Администраторы, внимание! {admins_mention}")
+@dp.message(F.left_chat_member)
+async def goodbye(message: types.Message):
+    await message.delete()
 
-# ========== ЗАПУСК ========== #
-if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+# --- Запуск --- #
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(main())
